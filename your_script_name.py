@@ -31,7 +31,6 @@ class ControlPanelHandler(http.server.SimpleHTTPRequestHandler):
             '/clear-epic-accounts': self.handle_clear_epic_accounts
         }
         
-        # Handle paths that end with a unique ID
         path_without_id = '/'.join(self.path.split('/')[:-1]) + '/'
         
         if self.path in endpoints:
@@ -256,4 +255,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
