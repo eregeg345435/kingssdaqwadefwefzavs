@@ -263,15 +263,11 @@ class ControlPanelHandler(http.server.SimpleHTTPRequestHandler):
         pass
 
 # --- Helper Functions ---
-def find_free_port():
-    with socketserver.TCPServer(("", 0), None) as s:
-        return s.server_address[1]
-
 def signal_handler(signum, frame):
     print("\n🛑 Shutting down server...")
     sys.exit(0)
 
-# --- HTML Templates (as raw strings) ---
+# --- HTML Templates (as raw strings to fix syntax warnings) ---
 control_panel_html = r'''
 <!DOCTYPE html>
 <html lang="en">
@@ -399,15 +395,19 @@ control_panel_html = r'''
         }
 
         async function fetchData() {
-            const [codesRes, accountsRes, sessionsRes] = await Promise.all([
-                fetch('/api/codes'), fetch('/api/epic-accounts'), fetch('/api/epic-sessions')
-            ]);
-            const data = {
-                codes: await codesRes.json(),
-                accounts: (await accountsRes.json()).accounts,
-                sessions: (await sessionsRes.json()).sessions
-            };
-            updateUI(data);
+            try {
+                const [codesRes, accountsRes, sessionsRes] = await Promise.all([
+                    fetch('/api/codes'), fetch('/api/epic-accounts'), fetch('/api/epic-sessions')
+                ]);
+                const data = {
+                    codes: (await codesRes.json()).codes,
+                    accounts: (await accountsRes.json()).accounts,
+                    sessions: (await sessionsRes.json()).sessions
+                };
+                updateUI(data);
+            } catch (e) {
+                console.error("Failed to fetch data:", e);
+            }
         }
         setInterval(fetchData, 2000);
         fetchData();
@@ -496,13 +496,13 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # Determine port: use environment variable for servers, otherwise find a free one
-    port = int(os.environ.get('PORT', find_free_port()))
+    # **FIX:** Use Render's PORT environment variable. Default to 8080 for local use.
+    port = int(os.environ.get('PORT', 8080))
     
     print("🚀 Starting Control Panel...")
     print(f"✅ Server listening on http://0.0.0.0:{port}")
     
-    # Open the local browser only if not in a typical server environment
+    # Open the local browser only if not in a server environment (like Render)
     if 'PORT' not in os.environ:
         webbrowser.open(f'http://localhost:{port}')
 
@@ -511,3 +511,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
