@@ -11,7 +11,6 @@ import socket
 import os
 import signal
 import sys
-import re
 import asyncio
 import aiohttp
 
@@ -116,7 +115,6 @@ class ControlPanelHandler(http.server.SimpleHTTPRequestHandler):
     async def epic_device_auth_flow(self, session_id, timestamp):
         self.epic_device_sessions[session_id] = {'created': timestamp, 'status': 'initializing'}
         async with aiohttp.ClientSession() as sess:
-            # Combined API calls for clarity
             async def get_api_token(grant_type, authorization, **kwargs):
                 headers = {"Authorization": f"basic {authorization}", "Content-Type": "application/x-www-form-urlencoded"}
                 data = {"grant_type": grant_type, **kwargs}
@@ -255,3 +253,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
