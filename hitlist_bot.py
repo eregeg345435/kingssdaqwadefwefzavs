@@ -6,7 +6,7 @@ Discord Bot for tracking Epic Games account status.
 - Periodically checks if accounts become inactive.
 - Notifies with a custom message when an account is "hit".
 - Optimized for deployment on Render with persistent storage.
-Last updated: 2025-10-14
+Last updated: 2025-10-15
 """
 
 import os
@@ -29,12 +29,10 @@ from discord.ext import commands, tasks
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
 # Bot version info
-LAST_UPDATED = "2025-10-14 11:00:59"
+LAST_UPDATED = "2025-10-15 08:21:08"
 BOT_USER = "gregergrgergeg"
 
 # --- RENDER PERSISTENT DISK CONFIG ---
-# This is the path where Render mounts its persistent disk.
-# We will save the hitlist here so it doesn't get deleted on restarts.
 DISK_PATH = "/etc/render/disk"
 HITLIST_FILE_PATH = os.path.join(DISK_PATH, "hitlist.json")
 
@@ -85,7 +83,6 @@ proxy_last_checked = 0
 proxy_check_interval = 60
 
 # --- PROXY MANAGEMENT ---
-# ... (proxy functions are unchanged) ...
 def test_proxy(proxy, timeout=3):
     proxy_dict = {'http': f'http://{proxy}', 'https': f'http://{proxy}'}
     try:
@@ -157,7 +154,6 @@ def epic_lookup(account_id):
 
 # --- DATA PERSISTENCE ---
 def save_hitlist():
-    """Save the hitlist to the persistent disk."""
     try:
         with open(HITLIST_FILE_PATH, "w") as f:
             json.dump(hitlist, f, indent=4)
@@ -165,7 +161,6 @@ def save_hitlist():
         logger.error(f"Could not write to persistent disk at {HITLIST_FILE_PATH}: {e}")
 
 def load_hitlist():
-    """Load the hitlist from the persistent disk."""
     global hitlist
     if os.path.exists(HITLIST_FILE_PATH):
         try:
@@ -180,7 +175,6 @@ def load_hitlist():
         hitlist = {}
 
 # --- BOT EVENTS AND TASKS ---
-# ... (on_ready, account_monitor, and commands are mostly unchanged but use the new file path) ...
 @bot.event
 async def on_ready():
     print(f"Bot logged in as {bot.user.name}")
@@ -227,6 +221,66 @@ async def account_monitor():
             save_hitlist()
             logger.info(f"Removed {username} from the hitlist.")
         await asyncio.sleep(2)
+
+# --- BOT COMMANDS ---
+
+@bot.command(name='user')
+async def user_lookup(ctx, account_id: str):
+    """Looks up an Epic Games account by ID and shows its status."""
+    if not _HEX32.match(account_id):
+        await ctx.send("❌ **Error:** Invalid account ID format. It must be a 32-character hexadecimal string.")
+        return
+
+    msg = await ctx.send(f"🔍 Searching for account ID `{account_id}`...")
+    
+    result = await bot.loop.run_in_executor(None, epic_lookup, account_id)
+
+    if result["status"] == "ACTIVE":
+        account_data = result["data"]
+        display_name = account_data.get("displayName", "N/A")
+        
+        embed = discord.Embed(
+            title=f"✅ Account Found: {display_name}",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Status", value="🟢 **ACTIVE**", inline=False)
+        embed.add_field(name="Account ID", value=account_data.get("id", account_id), inline=False)
+        
+        # Format linked accounts
+        external_auths = account_data.get("externalAuths", {})
+        if external_auths:
+            linked_accounts_text = ""
+            for platform, details in external_auths.items():
+                # Handle cases where details might be just a string or a dict
+                if isinstance(details, dict):
+                    name = details.get('externalDisplayName', 'N/A')
+                    linked_accounts_text += f"**{platform.capitalize()}:** {name}\n"
+                else:
+                    linked_accounts_text += f"**{platform.capitalize()}:** {details}\n"
+            embed.add_field(name="🔗 Linked Accounts", value=linked_accounts_text, inline=False)
+        else:
+            embed.add_field(name="🔗 Linked Accounts", value="No external accounts linked.", inline=False)
+            
+        await msg.edit(content=None, embed=embed)
+
+    elif result["status"] == "INACTIVE":
+        embed = discord.Embed(
+            title="❌ Account Not Found",
+            color=discord.Color.red()
+        )
+        embed.add_field(name="Status", value="🔴 **INACTIVE**", inline=False)
+        embed.add_field(name="Account ID Searched", value=account_id, inline=False)
+        embed.add_field(name="Reason", value=result.get("message", "The account is inactive or does not exist."), inline=False)
+        await msg.edit(content=None, embed=embed)
+
+    else: # Handle ERROR or INVALID
+        embed = discord.Embed(
+            title="⚠️ Lookup Failed",
+            description=result.get("message", "An unknown error occurred."),
+            color=discord.Color.orange()
+        )
+        await msg.edit(content=None, embed=embed)
+
 
 @bot.command(name='save')
 async def save_account(ctx, *, args: str):
