@@ -6,7 +6,7 @@ Discord Bot for tracking Epic Games account status.
 - Periodically checks if accounts become inactive.
 - Notifies with a custom message when an account is "hit".
 - Optimized for deployment on Render with persistent storage.
-Last updated: 2025-10-15
+Last updated: 2025-10-22
 """
 
 import os
@@ -29,8 +29,13 @@ from discord.ext import commands, tasks
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
 # Bot version info
-LAST_UPDATED = "2025-10-15 08:21:08"
+LAST_UPDATED = "2025-10-22 03:07:31"
 BOT_USER = "gregergrgergeg"
+
+# --- SERVER AND USER RESTRICTIONS ---
+ALLOWED_SERVERS = [1427741533876125708, 1429638051482566708]
+RESTRICTED_SERVER_ID = 1429638051482566708
+ALLOWED_USER_ID = 851862667823415347
 
 # --- RENDER PERSISTENT DISK CONFIG ---
 DISK_PATH = "/etc/render/disk"
@@ -73,6 +78,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("hitlist_bot")
 intents = discord.Intents.default()
 intents.message_content = True
+intents.guilds = True # Required for on_guild_join
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 # --- GLOBAL VARIABLES & LOCKS ---
@@ -181,9 +187,47 @@ async def on_ready():
     print(f"User: {BOT_USER}")
     print(f"Last Updated: {LAST_UPDATED}")
     print("---------------------------------")
+    # Leave any servers that are not in the allowed list
+    for guild in bot.guilds:
+        if guild.id not in ALLOWED_SERVERS:
+            logger.warning(f"Leaving unauthorized server: {guild.name} ({guild.id})")
+            await guild.leave()
     load_hitlist()
     find_working_proxy(force_check=True)
     account_monitor.start()
+
+@bot.event
+async def on_guild_join(guild):
+    """Leaves a server if it is not on the allowed list."""
+    if guild.id not in ALLOWED_SERVERS:
+        logger.warning(f"Joined and leaving unauthorized server: {guild.name} ({guild.id})")
+        await guild.leave()
+
+@bot.before_invoke
+async def check_permissions(ctx):
+    """Global check to enforce server and user restrictions."""
+    if not ctx.guild: # Ignore DMs for command checks
+        raise commands.CheckFailure("Commands cannot be used in DMs.")
+    if ctx.guild.id not in ALLOWED_SERVERS:
+        logger.warning(f"Command '{ctx.command}' blocked in unauthorized server: {ctx.guild.name} ({ctx.guild.id})")
+        raise commands.CheckFailure("This bot is not authorized for this server.")
+    if ctx.guild.id == RESTRICTED_SERVER_ID and ctx.author.id != ALLOWED_USER_ID:
+        logger.warning(f"User {ctx.author} ({ctx.author.id}) blocked from using '{ctx.command}' in restricted server.")
+        raise commands.CheckFailure("You do not have permission to use this command.")
+    return True
+
+@bot.event
+async def on_command_error(ctx, error):
+    """Silently handle check failures to prevent bot from replying."""
+    if isinstance(error, commands.CheckFailure):
+        # Errors from check_permissions are logged there, so we just pass.
+        pass
+    elif isinstance(error, commands.CommandNotFound):
+        pass # Ignore unknown commands
+    else:
+        logger.error(f"An error occurred with command '{ctx.command}': {error}")
+        # Optionally, send a generic error message to the user
+        # await ctx.send("An unexpected error occurred. Please try again later.")
 
 @tasks.loop(minutes=1)
 async def account_monitor():
