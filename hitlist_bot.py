@@ -30,7 +30,7 @@ from discord.ext import commands, tasks
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
 # Bot version info
-LAST_UPDATED = "2025-10-24 20:26:55"
+LAST_UPDATED = "2025-10-24 20:34:09"
 BOT_USER = "gregergrgergeg"
 
 # --- SERVER AND USER RESTRICTIONS ---
@@ -160,9 +160,9 @@ def epic_lookup_by_id(account_id):
     return {"status": "ERROR", "message": f"API returned unexpected status code: {response.status_code}"}
 
 def epic_lookup_by_name(username):
-    """Looks up an Epic account by display name, handling special characters."""
+    """Looks up an Epic account by display name using the search endpoint."""
     encoded_username = urllib.parse.quote(username)
-    url = f"{API_BASE}/name/{encoded_username}"
+    url = f"{API_BASE}/search?name={encoded_username}"
     response = get_api_response(url)
     if response is None:
         return {"status": "ERROR", "message": "API request failed."}
@@ -171,6 +171,7 @@ def epic_lookup_by_name(username):
     if response.status_code == 200:
         try:
             data = response.json()
+            # The search endpoint returns the full user object directly
             if isinstance(data, dict) and "id" in data:
                 return {"status": "ACTIVE", "data": data}
             else:
