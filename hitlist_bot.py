@@ -6,7 +6,7 @@ Discord Bot for tracking Epic Games account status.
 - Periodically checks if accounts become inactive.
 - Notifies with a custom message when an account is "hit".
 - Optimized for deployment on Render with persistent storage.
-Last updated: 2025-10-22
+Last updated: 2025-10-24
 """
 
 import os
@@ -18,6 +18,7 @@ import asyncio
 import sys
 import random
 import threading
+import urllib.parse
 from datetime import datetime
 
 import requests
@@ -29,7 +30,7 @@ from discord.ext import commands, tasks
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
 # Bot version info
-LAST_UPDATED = "2025-10-22 03:07:31"
+LAST_UPDATED = "2025-10-24 20:26:55"
 BOT_USER = "gregergrgergeg"
 
 # --- SERVER AND USER RESTRICTIONS ---
@@ -136,7 +137,7 @@ def get_api_response(url, timeout=8.0):
         logger.error(f"Direct connection error: {e}")
         return None
 
-def epic_lookup(account_id):
+def epic_lookup_by_id(account_id):
     if not account_id or not _HEX32.match(account_id):
         return {"status": "INVALID", "message": "Invalid account ID format."}
     url = f"{API_BASE}/id/{account_id}"
@@ -154,6 +155,26 @@ def epic_lookup(account_id):
                 return {"status": "INACTIVE", "message": "Account not found (API returned empty list)."}
             if isinstance(data, dict) and "displayName" in data:
                  return {"status": "ACTIVE", "data": data}
+        except json.JSONDecodeError:
+            return {"status": "ERROR", "message": "Failed to decode API response."}
+    return {"status": "ERROR", "message": f"API returned unexpected status code: {response.status_code}"}
+
+def epic_lookup_by_name(username):
+    """Looks up an Epic account by display name, handling special characters."""
+    encoded_username = urllib.parse.quote(username)
+    url = f"{API_BASE}/name/{encoded_username}"
+    response = get_api_response(url)
+    if response is None:
+        return {"status": "ERROR", "message": "API request failed."}
+    if response.status_code == 404:
+        return {"status": "INACTIVE", "message": f"User '{username}' not found."}
+    if response.status_code == 200:
+        try:
+            data = response.json()
+            if isinstance(data, dict) and "id" in data:
+                return {"status": "ACTIVE", "data": data}
+            else:
+                 return {"status": "INACTIVE", "message": f"User '{username}' not found."}
         except json.JSONDecodeError:
             return {"status": "ERROR", "message": "Failed to decode API response."}
     return {"status": "ERROR", "message": f"API returned unexpected status code: {response.status_code}"}
@@ -239,7 +260,7 @@ async def account_monitor():
         if not account_data: continue
         username, channel_id, user_id = account_data['username'], account_data.get('channel_id'), account_data.get('user_id')
         logger.info(f"Checking {username} ({account_id})")
-        result = await bot.loop.run_in_executor(None, epic_lookup, account_id)
+        result = await bot.loop.run_in_executor(None, epic_lookup_by_id, account_id)
         if result["status"] == "INACTIVE":
             logger.info(f"Account {username} ({account_id}) is now INACTIVE. Reason: {result.get('message')}")
             message_title = random.choice(HIT_MESSAGES).format(username=username)
@@ -269,33 +290,33 @@ async def account_monitor():
 # --- BOT COMMANDS ---
 
 @bot.command(name='user')
-async def user_lookup(ctx, account_id: str):
-    """Looks up an Epic Games account by ID and shows its status."""
-    if not _HEX32.match(account_id):
-        await ctx.send("❌ **Error:** Invalid account ID format. It must be a 32-character hexadecimal string.")
-        return
-
-    msg = await ctx.send(f"🔍 Searching for account ID `{account_id}`...")
+async def user_lookup(ctx, *, identifier: str):
+    """Looks up an Epic Games account by username or ID."""
+    msg = await ctx.send(f"🔍 Searching for `{identifier}`...")
     
-    result = await bot.loop.run_in_executor(None, epic_lookup, account_id)
+    # Determine if the identifier is an account ID or a username
+    if _HEX32.match(identifier):
+        result = await bot.loop.run_in_executor(None, epic_lookup_by_id, identifier)
+    else:
+        result = await bot.loop.run_in_executor(None, epic_lookup_by_name, identifier)
 
     if result["status"] == "ACTIVE":
         account_data = result["data"]
         display_name = account_data.get("displayName", "N/A")
+        account_id = account_data.get("id", "N/A")
         
         embed = discord.Embed(
             title=f"✅ Account Found: {display_name}",
             color=discord.Color.green()
         )
         embed.add_field(name="Status", value="🟢 **ACTIVE**", inline=False)
-        embed.add_field(name="Account ID", value=account_data.get("id", account_id), inline=False)
+        embed.add_field(name="Account ID", value=account_id, inline=False)
         
         # Format linked accounts
         external_auths = account_data.get("externalAuths", {})
         if external_auths:
             linked_accounts_text = ""
             for platform, details in external_auths.items():
-                # Handle cases where details might be just a string or a dict
                 if isinstance(details, dict):
                     name = details.get('externalDisplayName', 'N/A')
                     linked_accounts_text += f"**{platform.capitalize()}:** {name}\n"
@@ -313,7 +334,7 @@ async def user_lookup(ctx, account_id: str):
             color=discord.Color.red()
         )
         embed.add_field(name="Status", value="🔴 **INACTIVE**", inline=False)
-        embed.add_field(name="Account ID Searched", value=account_id, inline=False)
+        embed.add_field(name="Identifier Searched", value=identifier, inline=False)
         embed.add_field(name="Reason", value=result.get("message", "The account is inactive or does not exist."), inline=False)
         await msg.edit(content=None, embed=embed)
 
@@ -327,45 +348,63 @@ async def user_lookup(ctx, account_id: str):
 
 
 @bot.command(name='save')
-async def save_account(ctx, *, args: str):
-    try:
-        parts = args.split()
-        account_id, username = parts[-1], " ".join(parts[:-1])
-    except IndexError:
-        await ctx.send("❌ **Error:** Incorrect format. Use `!save <USERNAME> <ACCOUNT_ID>`."); return
-    if not username:
-        await ctx.send("❌ **Error:** You must provide a username."); return
-    if not _HEX32.match(account_id):
-        await ctx.send("❌ **Error:** Invalid account ID format. It must be a 32-character hexadecimal string."); return
-    if account_id in hitlist:
-        await ctx.send(f"⚠️ **Notice:** Account ID `{account_id}` is already on the hitlist under the name `{hitlist[account_id]['username']}`."); return
-    await ctx.send(f"🔍 Verifying account `{username}`...")
-    result = await bot.loop.run_in_executor(None, epic_lookup, account_id)
+async def save_account(ctx, *, identifier: str):
+    """Saves an account to the hitlist by username or account ID."""
+    if not identifier:
+        await ctx.send("❌ **Error:** You must provide a username or account ID. Use `!save <USERNAME_OR_ID>`."); return
+
+    await ctx.send(f"🔍 Verifying account `{identifier}`...")
+    
+    # Determine if identifier is an ID or username
+    if _HEX32.match(identifier):
+        result = await bot.loop.run_in_executor(None, epic_lookup_by_id, identifier)
+    else:
+        result = await bot.loop.run_in_executor(None, epic_lookup_by_name, identifier)
+
     if result["status"] == "ACTIVE":
+        account_data = result["data"]
+        account_id = account_data.get("id")
+        username = account_data.get("displayName")
+
+        if not account_id or not username:
+            await ctx.send("❌ **Failed:** Could not retrieve essential account details (ID or Username)."); return
+
+        if account_id in hitlist:
+            await ctx.send(f"⚠️ **Notice:** Account `{username}` (ID: `{account_id}`) is already on the hitlist."); return
+
         hitlist[account_id] = {"username": username, "channel_id": ctx.channel.id, "user_id": ctx.author.id}
         save_hitlist()
         await ctx.send(f"✅ **Success!** `{username}` has been added to the hit list. Notifications will be sent to this channel and your DMs.")
     else:
-        await ctx.send(f"❌ **Failed:** Could not verify `{username}` as an active account. Reason: {result.get('message')}")
+        await ctx.send(f"❌ **Failed:** Could not verify `{identifier}` as an active account. Reason: {result.get('message')}")
 
 @bot.command(name='unsave')
-async def unsave_account(ctx, *, args: str):
-    try:
-        parts = args.split()
-        account_id, username = parts[-1], " ".join(parts[:-1])
-    except IndexError:
-        await ctx.send("❌ **Error:** Incorrect format. Use `!unsave <USERNAME> <ACCOUNT_ID>`."); return
-    if not username:
-        await ctx.send("❌ **Error:** You must provide a username."); return
-    if account_id in hitlist:
-        if hitlist[account_id]['username'].lower() == username.lower():
-            del hitlist[account_id]
-            save_hitlist()
-            await ctx.send(f"🗑️ **Success!** `{username}` has been removed from the hit list.")
-        else:
-            await ctx.send(f"❌ **Error:** The username `{username}` does not match the one saved for that Account ID (`{hitlist[account_id]['username']}`).")
+async def unsave_account(ctx, *, identifier: str):
+    """Unsaves an account from the hitlist by username or account ID."""
+    if not identifier:
+        await ctx.send("❌ **Error:** You must provide a username or account ID. Use `!unsave <USERNAME_OR_ID>`."); return
+        
+    account_id_to_remove = None
+    username_to_remove = None
+
+    if _HEX32.match(identifier):
+        account_id_to_remove = identifier
+        if account_id_to_remove in hitlist:
+            username_to_remove = hitlist[account_id_to_remove]['username']
     else:
-        await ctx.send(f"❌ **Error:** Account ID `{account_id}` was not found on the hit list.")
+        # Search for the username in the hitlist
+        for acc_id, data in hitlist.items():
+            if data['username'].lower() == identifier.lower():
+                account_id_to_remove = acc_id
+                username_to_remove = data['username']
+                break
+    
+    if account_id_to_remove:
+        del hitlist[account_id_to_remove]
+        save_hitlist()
+        await ctx.send(f"🗑️ **Success!** `{username_to_remove}` has been removed from the hit list.")
+    else:
+        await ctx.send(f"❌ **Error:** `{identifier}` was not found on the hit list.")
 
 @bot.command(name='hitlist')
 async def show_hitlist(ctx):
