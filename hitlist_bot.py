@@ -6,7 +6,7 @@ Discord Bot for tracking Epic Games account status.
 - Periodically checks if accounts become inactive.
 - Notifies with a custom message when an account is "hit".
 - Optimized for deployment on Render with persistent storage.
-Last updated: 2025-10-24
+Last updated: 2025-10-25
 """
 
 import os
@@ -24,13 +24,14 @@ from datetime import datetime
 import requests
 import discord
 from discord.ext import commands, tasks
+from discord.ui import View, Button
 
 # --- CONFIGURATION ---
 # The bot token is now read from an environment variable for security.
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
 # Bot version info
-LAST_UPDATED = "2025-10-24 20:34:09"
+LAST_UPDATED = "2025-10-25 03:52:14"
 BOT_USER = "gregergrgergeg"
 
 # --- SERVER AND USER RESTRICTIONS ---
@@ -60,7 +61,7 @@ PROXIES = [
     "190.242.157.215:8080", "154.62.226.126:8888", "51.159.159.73:80",
     "176.126.103.194:44214", "185.191.236.162:3128", "157.180.121.252:35993",
     "157.180.121.252:16621", "157.180.121.252:55503", "157.180.121.252:53919",
-    "175.118.246.102:3128", "64.92.82.61:8081", "132.145.75.68:5457",
+   "175.118.246.102:3128", "64.92.82.61:8081", "132.145.75.68:5457",
     "157.180.121.252:35519", "77.110.114.116:8081"
 ]
 
@@ -171,14 +172,28 @@ def epic_lookup_by_name(username):
     if response.status_code == 200:
         try:
             data = response.json()
-            # The search endpoint returns the full user object directly
-            if isinstance(data, dict) and "id" in data:
-                return {"status": "ACTIVE", "data": data}
+            # Handle both list and dict responses from the search API
+            if isinstance(data, list):
+                if not data:
+                    return {"status": "INACTIVE", "message": f"User '{username}' not found."}
+                # Find an exact match in the list
+                for user in data:
+                    if user.get("displayName", "").lower() == username.lower():
+                        return {"status": "ACTIVE", "data": user}
+                # If no exact match, consider it not found to avoid ambiguity
+                return {"status": "INACTIVE", "message": f"User '{username}' not found (no exact match)."}
+            elif isinstance(data, dict) and "id" in data:
+                # If the response is a single object, check if it's the right user
+                if data.get("displayName", "").lower() == username.lower():
+                    return {"status": "ACTIVE", "data": data}
+                else:
+                    return {"status": "INACTIVE", "message": f"User '{username}' not found."}
             else:
-                 return {"status": "INACTIVE", "message": f"User '{username}' not found."}
+                return {"status": "INACTIVE", "message": f"User '{username}' not found."}
         except json.JSONDecodeError:
             return {"status": "ERROR", "message": "Failed to decode API response."}
     return {"status": "ERROR", "message": f"API returned unexpected status code: {response.status_code}"}
+
 
 # --- DATA PERSISTENCE ---
 def save_hitlist():
@@ -288,6 +303,54 @@ async def account_monitor():
             logger.info(f"Removed {username} from the hitlist.")
         await asyncio.sleep(2)
 
+# --- UI COMPONENTS FOR COMMANDS ---
+
+class ConfirmationView(View):
+    def __init__(self, account_data, original_author):
+        super().__init__(timeout=60)  # Buttons will be disabled after 60 seconds
+        self.account_data = account_data
+        self.original_author = original_author
+        self.message = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # Only allow the original command author to interact
+        if interaction.user.id != self.original_author.id:
+            await interaction.response.send_message("You cannot interact with this.", ephemeral=True)
+            return False
+        return True
+
+    async def disable_buttons(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            await self.message.edit(view=self)
+
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
+    async def yes_button(self, interaction: discord.Interaction, button: Button):
+        await self.disable_buttons()
+        
+        display_name = self.account_data.get("displayName", "N/A")
+        account_id = self.account_data.get("id", "N/A")
+        external_auths = self.account_data.get("externalAuths", {})
+
+        format_str = f"my ID: {account_id}\nmy epic: {display_name}\n"
+        
+        if "xbox" in external_auths:
+            format_str += f"my xbox: {external_auths['xbox'].get('externalDisplayName', 'N/A')}\n"
+        if "psn" in external_auths:
+            format_str += f"my psn: {external_auths['psn'].get('externalDisplayName', 'N/A')}\n"
+
+        await interaction.response.send_message(f"```{format_str.strip()}```")
+
+    @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
+    async def no_button(self, interaction: discord.Interaction, button: Button):
+        await self.disable_buttons()
+        await interaction.response.send_message("Format request cancelled.", ephemeral=True)
+
+    async def on_timeout(self):
+        await self.disable_buttons()
+
+
 # --- BOT COMMANDS ---
 
 @bot.command(name='user')
@@ -313,7 +376,6 @@ async def user_lookup(ctx, *, identifier: str):
         embed.add_field(name="Status", value="🟢 **ACTIVE**", inline=False)
         embed.add_field(name="Account ID", value=account_id, inline=False)
         
-        # Format linked accounts
         external_auths = account_data.get("externalAuths", {})
         if external_auths:
             linked_accounts_text = ""
@@ -326,8 +388,12 @@ async def user_lookup(ctx, *, identifier: str):
             embed.add_field(name="🔗 Linked Accounts", value=linked_accounts_text, inline=False)
         else:
             embed.add_field(name="🔗 Linked Accounts", value="No external accounts linked.", inline=False)
-            
+
+        # Create the confirmation view and send it
+        view = ConfirmationView(account_data, ctx.author)
+        confirmation_msg = "Do you want to build a format for this user?"
         await msg.edit(content=None, embed=embed)
+        view.message = await ctx.send(confirmation_msg, view=view)
 
     elif result["status"] == "INACTIVE":
         embed = discord.Embed(
