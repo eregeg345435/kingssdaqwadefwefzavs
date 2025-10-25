@@ -24,14 +24,14 @@ from datetime import datetime
 import requests
 import discord
 from discord.ext import commands, tasks
-from discord.ui import View, Button
+from discord import ui # Import the UI library for buttons
 
 # --- CONFIGURATION ---
 # The bot token is now read from an environment variable for security.
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
 # Bot version info
-LAST_UPDATED = "2025-10-25 04:01:59"
+LAST_UPDATED = "2025-10-25 04:34:08"
 BOT_USER = "gregergrgergeg"
 
 # --- SERVER AND USER RESTRICTIONS ---
@@ -90,13 +90,74 @@ current_proxy = None
 proxy_last_checked = 0
 proxy_check_interval = 60
 
+# --- UI VIEW FOR FORMATTING ---
+class FormatRequestView(ui.View):
+    def __init__(self, *, author: discord.User, account_id: str, display_name: str, external_auths: dict):
+        super().__init__(timeout=60.0)
+        self.author = author
+        self.account_id = account_id
+        self.display_name = display_name
+        self.external_auths = external_auths or {}
+        self.message = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message("You are not authorized to use these buttons.", ephemeral=True)
+            return False
+        return True
+
+    @ui.button(label="Yes", style=discord.ButtonStyle.green)
+    async def yes_button(self, interaction: discord.Interaction, button: ui.Button):
+        # ** THE FIX IS HERE **
+        format_lines = [
+            f"my ID: {self.account_id}",
+            f"my epic: {self.display_name}"
+        ]
+
+        # Define the mapping from API key to desired format key
+        platform_map = {
+            'psn': 'my psn',
+            'xbl': 'my xbox',
+            'steam': 'my steam'
+        }
+
+        for api_key, format_key in platform_map.items():
+            if api_key in self.external_auths:
+                details = self.external_auths[api_key]
+                # Extract the name whether it's a dict or a plain string
+                name = details.get('externalDisplayName', 'N/A') if isinstance(details, dict) else details
+                format_lines.append(f"{format_key}: {name}")
+
+        format_string = "\n".join(format_lines)
+        await interaction.response.send_message(f"```{format_string}```")
+        
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            await self.message.edit(view=self)
+        self.stop()
+
+    @ui.button(label="No", style=discord.ButtonStyle.red)
+    async def no_button(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer()
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            await self.message.edit(view=self)
+        self.stop()
+
+    async def on_timeout(self):
+        if self.message:
+            for item in self.children:
+                item.disabled = True
+            await self.message.edit(view=self)
+
 # --- PROXY MANAGEMENT ---
 def test_proxy(proxy, timeout=3):
     proxy_dict = {'http': f'http://{proxy}', 'https': f'http://{proxy}'}
     try:
-        # Using a known valid endpoint for testing proxies might be more reliable
-        response = requests.get(f"{API_BASE}/name/epic", proxies=proxy_dict, timeout=timeout, headers=HEADERS)
-        return response.status_code in [200, 404] # 404 is also a valid response from the API
+        response = requests.get(f"{API_BASE}/name/test", proxies=proxy_dict, timeout=timeout, headers=HEADERS)
+        return response.status_code == 200
     except:
         return False
 
@@ -144,44 +205,28 @@ def epic_lookup_by_id(account_id):
         return {"status": "INVALID", "message": "Invalid account ID format."}
     url = f"{API_BASE}/id/{account_id}"
     response = get_api_response(url)
-    if response is None:
-        return {"status": "ERROR", "message": "API request failed."}
-    if response.status_code == 404:
-        return {"status": "INACTIVE", "message": "Account not found or inactive (404)."}
+    if response is None: return {"status": "ERROR", "message": "API request failed."}
+    if response.status_code == 404: return {"status": "INACTIVE", "message": "Account not found or inactive (404)."}
     if response.status_code == 200:
         try:
             data = response.json()
-            if isinstance(data, list) and len(data) > 0:
-                return {"status": "ACTIVE", "data": data[0]}
-            if isinstance(data, list) and len(data) == 0:
-                return {"status": "INACTIVE", "message": "Account not found (API returned empty list)."}
-            if isinstance(data, dict) and "displayName" in data:
-                 return {"status": "ACTIVE", "data": data}
-        except json.JSONDecodeError:
-            return {"status": "ERROR", "message": "Failed to decode API response."}
+            if isinstance(data, list) and len(data) > 0: return {"status": "ACTIVE", "data": data[0]}
+            if isinstance(data, dict) and "displayName" in data: return {"status": "ACTIVE", "data": data}
+        except json.JSONDecodeError: return {"status": "ERROR", "message": "Failed to decode API response."}
     return {"status": "ERROR", "message": f"API returned unexpected status code: {response.status_code}"}
 
 def epic_lookup_by_name(username):
-    """Looks up an Epic account by display name using the /name/{name} endpoint."""
-    encoded_username = urllib.parse.quote(username)
-    url = f"{API_BASE}/name/{encoded_username}" # CORRECTED URL
+    encoded_username = username.replace(' ', '%20')
+    url = f"{API_BASE}/name/{encoded_username}"
     response = get_api_response(url)
-    if response is None:
-        return {"status": "ERROR", "message": "API request failed."}
-    if response.status_code == 404:
-        return {"status": "INACTIVE", "message": f"User '{username}' not found."}
+    if response is None: return {"status": "ERROR", "message": "API request failed. Check network/proxy status."}
     if response.status_code == 200:
         try:
             data = response.json()
-            # This endpoint should return the full user object directly
-            if isinstance(data, dict) and "id" in data:
-                return {"status": "ACTIVE", "data": data}
-            else:
-                 return {"status": "INACTIVE", "message": f"User '{username}' not found."}
-        except json.JSONDecodeError:
-            return {"status": "ERROR", "message": "Failed to decode API response."}
-    return {"status": "ERROR", "message": f"API returned unexpected status code: {response.status_code}"}
-
+            if isinstance(data, list) and len(data) > 0: return {"status": "ACTIVE", "data": data[0]}
+            elif isinstance(data, dict) and "id" in data: return {"status": "ACTIVE", "data": data}
+        except json.JSONDecodeError: return {"status": "ERROR", "message": "Failed to decode API response."}
+    return {"status": "INACTIVE", "message": f"User '{username}' not found."}
 
 # --- DATA PERSISTENCE ---
 def save_hitlist():
@@ -212,10 +257,8 @@ async def on_ready():
     print(f"User: {BOT_USER}")
     print(f"Last Updated: {LAST_UPDATED}")
     print("---------------------------------")
-    # Leave any servers that are not in the allowed list
     for guild in bot.guilds:
         if guild.id not in ALLOWED_SERVERS:
-            logger.warning(f"Leaving unauthorized server: {guild.name} ({guild.id})")
             await guild.leave()
     load_hitlist()
     find_working_proxy(force_check=True)
@@ -223,270 +266,133 @@ async def on_ready():
 
 @bot.event
 async def on_guild_join(guild):
-    """Leaves a server if it is not on the allowed list."""
     if guild.id not in ALLOWED_SERVERS:
-        logger.warning(f"Joined and leaving unauthorized server: {guild.name} ({guild.id})")
         await guild.leave()
 
 @bot.before_invoke
 async def check_permissions(ctx):
-    """Global check to enforce server and user restrictions."""
-    if not ctx.guild: # Ignore DMs for command checks
-        raise commands.CheckFailure("Commands cannot be used in DMs.")
+    if not ctx.guild: raise commands.CheckFailure("Commands cannot be used in DMs.")
     if ctx.guild.id not in ALLOWED_SERVERS:
-        logger.warning(f"Command '{ctx.command}' blocked in unauthorized server: {ctx.guild.name} ({ctx.guild.id})")
         raise commands.CheckFailure("This bot is not authorized for this server.")
     if ctx.guild.id == RESTRICTED_SERVER_ID and ctx.author.id != ALLOWED_USER_ID:
-        logger.warning(f"User {ctx.author} ({ctx.author.id}) blocked from using '{ctx.command}' in restricted server.")
         raise commands.CheckFailure("You do not have permission to use this command.")
     return True
 
 @bot.event
 async def on_command_error(ctx, error):
-    """Silently handle check failures to prevent bot from replying."""
-    if isinstance(error, commands.CheckFailure):
-        # Errors from check_permissions are logged there, so we just pass.
+    if isinstance(error, (commands.CheckFailure, commands.CommandNotFound)):
         pass
-    elif isinstance(error, commands.CommandNotFound):
-        pass # Ignore unknown commands
     else:
         logger.error(f"An error occurred with command '{ctx.command}': {error}")
-        # Optionally, send a generic error message to the user
-        # await ctx.send("An unexpected error occurred. Please try again later.")
 
 @tasks.loop(minutes=1)
 async def account_monitor():
     if not hitlist: return
-    logger.info(f"Running account monitor for {len(hitlist)} accounts...")
     accounts_to_check = list(hitlist.keys())
     for account_id in accounts_to_check:
         account_data = hitlist.get(account_id)
         if not account_data: continue
         username, channel_id, user_id = account_data['username'], account_data.get('channel_id'), account_data.get('user_id')
-        logger.info(f"Checking {username} ({account_id})")
         result = await bot.loop.run_in_executor(None, epic_lookup_by_id, account_id)
         if result["status"] == "INACTIVE":
-            logger.info(f"Account {username} ({account_id}) is now INACTIVE. Reason: {result.get('message')}")
             message_title = random.choice(HIT_MESSAGES).format(username=username)
             embed = discord.Embed(title=message_title, color=discord.Color.red())
             embed.add_field(name="Account ID", value=account_id, inline=False)
             embed.set_footer(text=f"Time of Inactivity: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
-            if channel_id:
-                channel = bot.get_channel(channel_id)
-                if channel:
-                    try: await channel.send(embed=embed)
-                    except discord.Forbidden: logger.error(f"Bot does not have permission to send messages in channel {channel_id}.")
-                    except Exception as e: logger.error(f"Failed to send message to channel {channel_id}: {e}")
-                else: logger.warning(f"Could not find channel with ID {channel_id}.")
-            if user_id:
-                try:
-                    user = await bot.fetch_user(user_id)
-                    if user:
-                        await user.send(embed=embed)
-                        logger.info(f"Successfully sent DM to user {user.name} ({user_id}).")
-                except discord.Forbidden: logger.warning(f"Failed to send DM to user {user_id}. They may have DMs disabled.")
-                except Exception as e: logger.error(f"An unexpected error occurred when trying to DM user {user_id}: {e}")
+            if channel_id and (channel := bot.get_channel(channel_id)):
+                try: await channel.send(embed=embed)
+                except discord.Forbidden: logger.error(f"No permission in channel {channel_id}.")
+            if user_id and (user := await bot.fetch_user(user_id)):
+                try: await user.send(embed=embed)
+                except discord.Forbidden: logger.warning(f"Cannot DM user {user_id}.")
             del hitlist[account_id]
             save_hitlist()
-            logger.info(f"Removed {username} from the hitlist.")
         await asyncio.sleep(2)
 
-# --- UI COMPONENTS FOR COMMANDS ---
-
-class ConfirmationView(View):
-    def __init__(self, account_data, original_author):
-        super().__init__(timeout=60)  # Buttons will be disabled after 60 seconds
-        self.account_data = account_data
-        self.original_author = original_author
-        self.message = None
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # Only allow the original command author to interact
-        if interaction.user.id != self.original_author.id:
-            await interaction.response.send_message("You cannot interact with this.", ephemeral=True)
-            return False
-        return True
-
-    async def disable_buttons(self):
-        for item in self.children:
-            item.disabled = True
-        if self.message:
-            await self.message.edit(view=self)
-
-    @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
-    async def yes_button(self, interaction: discord.Interaction, button: Button):
-        await self.disable_buttons()
-        
-        display_name = self.account_data.get("displayName", "N/A")
-        account_id = self.account_data.get("id", "N/A")
-        external_auths = self.account_data.get("externalAuths", {})
-
-        format_str = f"my ID: {account_id}\nmy epic: {display_name}\n"
-        
-        # Check for xbox and psn in external_auths, which are dictionaries themselves
-        if "xbox" in external_auths and isinstance(external_auths.get("xbox"), dict):
-            format_str += f"my xbox: {external_auths['xbox'].get('externalDisplayName', 'N/A')}\n"
-        if "psn" in external_auths and isinstance(external_auths.get("psn"), dict):
-            format_str += f"my psn: {external_auths['psn'].get('externalDisplayName', 'N/A')}\n"
-
-        await interaction.response.send_message(f"```{format_str.strip()}```")
-
-    @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
-    async def no_button(self, interaction: discord.Interaction, button: Button):
-        await self.disable_buttons()
-        await interaction.response.send_message("Format request cancelled.", ephemeral=True)
-
-    async def on_timeout(self):
-        await self.disable_buttons()
-
-
 # --- BOT COMMANDS ---
-
 @bot.command(name='user')
 async def user_lookup(ctx, *, identifier: str):
-    """Looks up an Epic Games account by username or ID."""
     msg = await ctx.send(f"🔍 Searching for `{identifier}`...")
-    
-    # Determine if the identifier is an account ID or a username
-    if _HEX32.match(identifier):
-        result = await bot.loop.run_in_executor(None, epic_lookup_by_id, identifier)
-    else:
-        result = await bot.loop.run_in_executor(None, epic_lookup_by_name, identifier)
+    result = await bot.loop.run_in_executor(None, epic_lookup_by_id if _HEX32.match(identifier) else epic_lookup_by_name, identifier)
 
     if result["status"] == "ACTIVE":
         account_data = result["data"]
         display_name = account_data.get("displayName", "N/A")
         account_id = account_data.get("id", "N/A")
+        external_auths = account_data.get("externalAuths", {})
         
-        embed = discord.Embed(
-            title=f"✅ Account Found: {display_name}",
-            color=discord.Color.green()
-        )
+        embed = discord.Embed(title=f"✅ Account Found: {display_name}", color=discord.Color.green())
         embed.add_field(name="Status", value="🟢 **ACTIVE**", inline=False)
         embed.add_field(name="Account ID", value=account_id, inline=False)
         
-        external_auths = account_data.get("externalAuths", {})
         if external_auths:
-            linked_accounts_text = ""
-            for platform, details in external_auths.items():
-                if isinstance(details, dict):
-                    name = details.get('externalDisplayName', 'N/A')
-                    linked_accounts_text += f"**{platform.capitalize()}:** {name}\n"
-                else: # Fallback for unexpected format
-                    linked_accounts_text += f"**{platform.capitalize()}:** {details}\n"
-            embed.add_field(name="🔗 Linked Accounts", value=linked_accounts_text, inline=False)
+            linked_text = "\n".join([f"**{p.capitalize()}:** {d.get('externalDisplayName', 'N/A') if isinstance(d, dict) else d}" for p, d in external_auths.items()])
+            embed.add_field(name="🔗 Linked Accounts", value=linked_text, inline=False)
         else:
             embed.add_field(name="🔗 Linked Accounts", value="No external accounts linked.", inline=False)
-
-        # Create the confirmation view and send it
-        view = ConfirmationView(account_data, ctx.author)
-        confirmation_msg = "Do you want to build a format for this user?"
+            
         await msg.edit(content=None, embed=embed)
-        view.message = await ctx.send(confirmation_msg, view=view)
-
-    elif result["status"] == "INACTIVE":
-        embed = discord.Embed(
-            title="❌ Account Not Found",
-            color=discord.Color.red()
-        )
+        
+        # ** Pass external_auths to the view **
+        view = FormatRequestView(author=ctx.author, account_id=account_id, display_name=display_name, external_auths=external_auths)
+        message = await ctx.send("Do you want to build a format for this user?", view=view)
+        view.message = message
+    else:
+        embed = discord.Embed(title="❌ Account Not Found", color=discord.Color.red())
         embed.add_field(name="Status", value="🔴 **INACTIVE**", inline=False)
         embed.add_field(name="Identifier Searched", value=identifier, inline=False)
         embed.add_field(name="Reason", value=result.get("message", "The account is inactive or does not exist."), inline=False)
         await msg.edit(content=None, embed=embed)
 
-    else: # Handle ERROR or INVALID
-        embed = discord.Embed(
-            title="⚠️ Lookup Failed",
-            description=result.get("message", "An unknown error occurred."),
-            color=discord.Color.orange()
-        )
-        await msg.edit(content=None, embed=embed)
-
-
 @bot.command(name='save')
-async def save_account(ctx, *, identifier: str):
-    """Saves an account to the hitlist by username or account ID."""
-    if not identifier:
-        await ctx.send("❌ **Error:** You must provide a username or account ID. Use `!save <USERNAME_OR_ID>`."); return
-
-    await ctx.send(f"🔍 Verifying account `{identifier}`...")
-    
-    # Determine if identifier is an ID or username
-    if _HEX32.match(identifier):
-        result = await bot.loop.run_in_executor(None, epic_lookup_by_id, identifier)
-    else:
-        result = await bot.loop.run_in_executor(None, epic_lookup_by_name, identifier)
-
+async def save_account(ctx, *, args: str):
+    try:
+        parts = args.split()
+        account_id, username = parts[-1], " ".join(parts[:-1])
+    except IndexError:
+        await ctx.send("❌ **Error:** Incorrect format. Use `!save <USERNAME> <ACCOUNT_ID>`."); return
+    if not username: await ctx.send("❌ **Error:** You must provide a username."); return
+    if not _HEX32.match(account_id): await ctx.send("❌ **Error:** Invalid account ID format."); return
+    if account_id in hitlist: await ctx.send(f"⚠️ **Notice:** ID `{account_id}` is already on the hitlist as `{hitlist[account_id]['username']}`."); return
+    await ctx.send(f"🔍 Verifying account `{username}`...")
+    result = await bot.loop.run_in_executor(None, epic_lookup_by_id, account_id)
     if result["status"] == "ACTIVE":
-        account_data = result["data"]
-        account_id = account_data.get("id")
-        username = account_data.get("displayName")
-
-        if not account_id or not username:
-            await ctx.send("❌ **Failed:** Could not retrieve essential account details (ID or Username)."); return
-
-        if account_id in hitlist:
-            await ctx.send(f"⚠️ **Notice:** Account `{username}` (ID: `{account_id}`) is already on the hitlist."); return
-
         hitlist[account_id] = {"username": username, "channel_id": ctx.channel.id, "user_id": ctx.author.id}
         save_hitlist()
-        await ctx.send(f"✅ **Success!** `{username}` has been added to the hit list. Notifications will be sent to this channel and your DMs.")
+        await ctx.send(f"✅ **Success!** `{username}` added to hit list.")
     else:
-        await ctx.send(f"❌ **Failed:** Could not verify `{identifier}` as an active account. Reason: {result.get('message')}")
+        await ctx.send(f"❌ **Failed:** Could not verify `{username}`. Reason: {result.get('message')}")
 
 @bot.command(name='unsave')
-async def unsave_account(ctx, *, identifier: str):
-    """Unsaves an account from the hitlist by username or account ID."""
-    if not identifier:
-        await ctx.send("❌ **Error:** You must provide a username or account ID. Use `!unsave <USERNAME_OR_ID>`."); return
-        
-    account_id_to_remove = None
-    username_to_remove = None
-
-    if _HEX32.match(identifier):
-        account_id_to_remove = identifier
-        if account_id_to_remove in hitlist:
-            username_to_remove = hitlist[account_id_to_remove]['username']
+async def unsave_account(ctx, *, args: str):
+    try:
+        parts = args.split()
+        account_id, username = parts[-1], " ".join(parts[:-1])
+    except IndexError:
+        await ctx.send("❌ **Error:** Incorrect format. Use `!unsave <USERNAME> <ACCOUNT_ID>`."); return
+    if not username: await ctx.send("❌ **Error:** You must provide a username."); return
+    if account_id in hitlist:
+        if hitlist[account_id]['username'].lower() == username.lower():
+            del hitlist[account_id]
+            save_hitlist()
+            await ctx.send(f"🗑️ **Success!** `{username}` has been removed from the hit list.")
+        else:
+            await ctx.send(f"❌ **Error:** Username does not match for that ID (`{hitlist[account_id]['username']}`).")
     else:
-        # Search for the username in the hitlist
-        for acc_id, data in hitlist.items():
-            if data['username'].lower() == identifier.lower():
-                account_id_to_remove = acc_id
-                username_to_remove = data['username']
-                break
-    
-    if account_id_to_remove:
-        del hitlist[account_id_to_remove]
-        save_hitlist()
-        await ctx.send(f"🗑️ **Success!** `{username_to_remove}` has been removed from the hit list.")
-    else:
-        await ctx.send(f"❌ **Error:** `{identifier}` was not found on the hit list.")
+        await ctx.send(f"❌ **Error:** Account ID `{account_id}` not found on the hit list.")
 
 @bot.command(name='hitlist')
 async def show_hitlist(ctx):
-    if not hitlist:
-        await ctx.send("The hit list is currently empty."); return
+    if not hitlist: await ctx.send("The hit list is currently empty."); return
     embed = discord.Embed(title="Current Hit List", color=discord.Color.blue())
-    description = ""
-    for i, (account_id, data) in enumerate(hitlist.items(), 1):
-        channel_mention = f"<#{data.get('channel_id')}>" if data.get('channel_id') else "N/A"
-        user_mention = f"<@{data.get('user_id')}>" if data.get('user_id') else "N/A"
-        description += f"**{i}. {data['username']}**\n   - ID: `{account_id}`\n   - Channel: {channel_mention}\n   - Saved by: {user_mention}\n"
+    description = "\n".join([f"**{i}. {d['username']}**\n   - ID: `{acc_id}`" for i, (acc_id, d) in enumerate(hitlist.items(), 1)])
     embed.description = description
     embed.set_footer(text=f"Monitoring {len(hitlist)} accounts.")
     await ctx.send(embed=embed)
 
 # --- MAIN EXECUTION ---
 if __name__ == "__main__":
-    if not BOT_TOKEN:
-        print("ERROR: Bot token not found. Make sure the DISCORD_BOT_TOKEN environment variable is set on Render.")
-        sys.exit(1)
-    print("Starting bot...")
-    try:
-        bot.run(BOT_TOKEN)
-    except discord.errors.LoginFailure:
-        print("ERROR: Invalid bot token provided in environment variables.")
-        sys.exit(1)
-    except Exception as e:
-        print(f"ERROR: Failed to start the bot: {e}")
-        sys.exit(1)
+    if not BOT_TOKEN: sys.exit("ERROR: DISCORD_BOT_TOKEN not found.")
+    try: bot.run(BOT_TOKEN)
+    except discord.errors.LoginFailure: sys.exit("ERROR: Invalid bot token.")
+    except Exception as e: sys.exit(f"ERROR: Failed to start bot: {e}")
