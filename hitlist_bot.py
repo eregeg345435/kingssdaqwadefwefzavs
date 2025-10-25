@@ -161,6 +161,28 @@ def epic_lookup_by_id(account_id):
             return {"status": "ERROR", "message": "Failed to decode API response."}
     return {"status": "ERROR", "message": f"API returned unexpected status code: {response.status_code}"}
 
+def _normalize_account_object(obj):
+    """
+    Ensure we return a consistent dict containing at least:
+    - id
+    - displayName
+    - externalAuths (dict or {})
+    This handles variations in the API's returned structure.
+    """
+    if not isinstance(obj, dict):
+        return {}
+    normalized = {}
+    # id
+    normalized['id'] = obj.get('id') or obj.get('accountId') or obj.get('account_id') or obj.get('epicId')
+    # displayName variants
+    normalized['displayName'] = obj.get('displayName') or obj.get('displayname') or obj.get('display_name') or obj.get('name')
+    # external auths variants
+    external = obj.get('externalAuths') or obj.get('external_auths') or obj.get('external') or obj.get('linkedAccounts')
+    normalized['externalAuths'] = external if isinstance(external, dict) else {}
+    # copy original keys through for any other usage
+    normalized['_raw'] = obj
+    return normalized
+
 def epic_lookup_by_name(username):
     """Looks up an Epic account by display name using the /name/{name} endpoint."""
     encoded_username = urllib.parse.quote(username)
@@ -173,11 +195,22 @@ def epic_lookup_by_name(username):
     if response.status_code == 200:
         try:
             data = response.json()
-            # This endpoint should return the full user object directly
-            if isinstance(data, dict) and "id" in data:
-                return {"status": "ACTIVE", "data": data}
+            # If API returns a list, try to find exact match, otherwise take the first entry
+            if isinstance(data, list):
+                if not data:
+                    return {"status": "INACTIVE", "message": f"User '{username}' not found."}
+                # try exact match on displayName (case-insensitive)
+                for user in data:
+                    dn = (user.get('displayName') or user.get('displayname') or user.get('name') or "").lower()
+                    if dn == username.lower():
+                        return {"status": "ACTIVE", "data": _normalize_account_object(user)}
+                # fallback to first list element if exact match not found
+                return {"status": "ACTIVE", "data": _normalize_account_object(data[0])}
+            elif isinstance(data, dict):
+                # direct object - normalize and return
+                return {"status": "ACTIVE", "data": _normalize_account_object(data)}
             else:
-                 return {"status": "INACTIVE", "message": f"User '{username}' not found."}
+                return {"status": "INACTIVE", "message": f"User '{username}' not found."}
         except json.JSONDecodeError:
             return {"status": "ERROR", "message": "Failed to decode API response."}
     return {"status": "ERROR", "message": f"API returned unexpected status code: {response.status_code}"}
@@ -355,8 +388,18 @@ async def user_lookup(ctx, *, identifier: str):
 
     if result["status"] == "ACTIVE":
         account_data = result["data"]
-        display_name = account_data.get("displayName", "N/A")
-        account_id = account_data.get("id", "N/A")
+        # account_data may already be normalized by epic_lookup_by_name; if it's raw object, normalize it
+        if isinstance(account_data, dict) and ('displayName' not in account_data and '_raw' not in account_data):
+            account_data = _normalize_account_object(account_data)
+        elif isinstance(account_data, dict) and '_raw' in account_data:
+            # already normalized by lookup function
+            pass
+        elif isinstance(account_data, list) and account_data:
+            account_data = _normalize_account_object(account_data[0])
+
+        # Final fallbacks for name and id
+        display_name = account_data.get("displayName") or (account_data.get('_raw') or {}).get('displayName') or (account_data.get('_raw') or {}).get('name') or "N/A"
+        account_id = account_data.get("id") or (account_data.get('_raw') or {}).get('id') or "N/A"
         
         embed = discord.Embed(
             title=f"✅ Account Found: {display_name}",
@@ -365,23 +408,25 @@ async def user_lookup(ctx, *, identifier: str):
         embed.add_field(name="Status", value="🟢 **ACTIVE**", inline=False)
         embed.add_field(name="Account ID", value=account_id, inline=False)
         
-        external_auths = account_data.get("externalAuths", {})
+        # Format linked accounts (use normalized externalAuths or fallbacks)
+        external_auths = account_data.get("externalAuths") or (account_data.get('_raw') or {}).get('externalAuths') or {}
         if external_auths:
             linked_accounts_text = ""
             for platform, details in external_auths.items():
                 if isinstance(details, dict):
-                    name = details.get('externalDisplayName', 'N/A')
+                    name = details.get('externalDisplayName') or details.get('displayName') or details.get('name') or 'N/A'
                     linked_accounts_text += f"**{platform.capitalize()}:** {name}\n"
-                else: # Fallback for unexpected format
+                else:
                     linked_accounts_text += f"**{platform.capitalize()}:** {details}\n"
             embed.add_field(name="🔗 Linked Accounts", value=linked_accounts_text, inline=False)
         else:
             embed.add_field(name="🔗 Linked Accounts", value="No external accounts linked.", inline=False)
+            
+        await msg.edit(content=None, embed=embed)
 
         # Create the confirmation view and send it
-        view = ConfirmationView(account_data, ctx.author)
+        view = ConfirmationView({"displayName": display_name, "id": account_id, "externalAuths": external_auths}, ctx.author)
         confirmation_msg = "Do you want to build a format for this user?"
-        await msg.edit(content=None, embed=embed)
         view.message = await ctx.send(confirmation_msg, view=view)
 
     elif result["status"] == "INACTIVE":
@@ -419,8 +464,11 @@ async def save_account(ctx, *, identifier: str):
 
     if result["status"] == "ACTIVE":
         account_data = result["data"]
-        account_id = account_data.get("id")
-        username = account_data.get("displayName")
+        # ensure normalized
+        if isinstance(account_data, dict) and '_raw' not in account_data:
+            account_data = _normalize_account_object(account_data)
+        account_id = account_data.get("id") or (account_data.get('_raw') or {}).get('id')
+        username = account_data.get("displayName") or (account_data.get('_raw') or {}).get('displayName')
 
         if not account_id or not username:
             await msg.edit(content="❌ **Failed:** Could not retrieve essential account details (ID or Username)."); return
