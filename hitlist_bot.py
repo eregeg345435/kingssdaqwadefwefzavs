@@ -31,7 +31,7 @@ from discord.ui import View, Button
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
 # Bot version info
-LAST_UPDATED = "2025-10-25 03:52:14"
+LAST_UPDATED = "2025-10-25 04:01:59"
 BOT_USER = "gregergrgergeg"
 
 # --- SERVER AND USER RESTRICTIONS ---
@@ -61,7 +61,7 @@ PROXIES = [
     "190.242.157.215:8080", "154.62.226.126:8888", "51.159.159.73:80",
     "176.126.103.194:44214", "185.191.236.162:3128", "157.180.121.252:35993",
     "157.180.121.252:16621", "157.180.121.252:55503", "157.180.121.252:53919",
-   "175.118.246.102:3128", "64.92.82.61:8081", "132.145.75.68:5457",
+    "175.118.246.102:3128", "64.92.82.61:8081", "132.145.75.68:5457",
     "157.180.121.252:35519", "77.110.114.116:8081"
 ]
 
@@ -94,8 +94,9 @@ proxy_check_interval = 60
 def test_proxy(proxy, timeout=3):
     proxy_dict = {'http': f'http://{proxy}', 'https': f'http://{proxy}'}
     try:
-        response = requests.get(f"{API_BASE}/name/test", proxies=proxy_dict, timeout=timeout, headers=HEADERS)
-        return response.status_code == 200
+        # Using a known valid endpoint for testing proxies might be more reliable
+        response = requests.get(f"{API_BASE}/name/epic", proxies=proxy_dict, timeout=timeout, headers=HEADERS)
+        return response.status_code in [200, 404] # 404 is also a valid response from the API
     except:
         return False
 
@@ -161,9 +162,9 @@ def epic_lookup_by_id(account_id):
     return {"status": "ERROR", "message": f"API returned unexpected status code: {response.status_code}"}
 
 def epic_lookup_by_name(username):
-    """Looks up an Epic account by display name using the search endpoint."""
+    """Looks up an Epic account by display name using the /name/{name} endpoint."""
     encoded_username = urllib.parse.quote(username)
-    url = f"{API_BASE}/search?name={encoded_username}"
+    url = f"{API_BASE}/name/{encoded_username}" # CORRECTED URL
     response = get_api_response(url)
     if response is None:
         return {"status": "ERROR", "message": "API request failed."}
@@ -172,24 +173,11 @@ def epic_lookup_by_name(username):
     if response.status_code == 200:
         try:
             data = response.json()
-            # Handle both list and dict responses from the search API
-            if isinstance(data, list):
-                if not data:
-                    return {"status": "INACTIVE", "message": f"User '{username}' not found."}
-                # Find an exact match in the list
-                for user in data:
-                    if user.get("displayName", "").lower() == username.lower():
-                        return {"status": "ACTIVE", "data": user}
-                # If no exact match, consider it not found to avoid ambiguity
-                return {"status": "INACTIVE", "message": f"User '{username}' not found (no exact match)."}
-            elif isinstance(data, dict) and "id" in data:
-                # If the response is a single object, check if it's the right user
-                if data.get("displayName", "").lower() == username.lower():
-                    return {"status": "ACTIVE", "data": data}
-                else:
-                    return {"status": "INACTIVE", "message": f"User '{username}' not found."}
+            # This endpoint should return the full user object directly
+            if isinstance(data, dict) and "id" in data:
+                return {"status": "ACTIVE", "data": data}
             else:
-                return {"status": "INACTIVE", "message": f"User '{username}' not found."}
+                 return {"status": "INACTIVE", "message": f"User '{username}' not found."}
         except json.JSONDecodeError:
             return {"status": "ERROR", "message": "Failed to decode API response."}
     return {"status": "ERROR", "message": f"API returned unexpected status code: {response.status_code}"}
@@ -335,9 +323,10 @@ class ConfirmationView(View):
 
         format_str = f"my ID: {account_id}\nmy epic: {display_name}\n"
         
-        if "xbox" in external_auths:
+        # Check for xbox and psn in external_auths, which are dictionaries themselves
+        if "xbox" in external_auths and isinstance(external_auths.get("xbox"), dict):
             format_str += f"my xbox: {external_auths['xbox'].get('externalDisplayName', 'N/A')}\n"
-        if "psn" in external_auths:
+        if "psn" in external_auths and isinstance(external_auths.get("psn"), dict):
             format_str += f"my psn: {external_auths['psn'].get('externalDisplayName', 'N/A')}\n"
 
         await interaction.response.send_message(f"```{format_str.strip()}```")
@@ -383,7 +372,7 @@ async def user_lookup(ctx, *, identifier: str):
                 if isinstance(details, dict):
                     name = details.get('externalDisplayName', 'N/A')
                     linked_accounts_text += f"**{platform.capitalize()}:** {name}\n"
-                else:
+                else: # Fallback for unexpected format
                     linked_accounts_text += f"**{platform.capitalize()}:** {details}\n"
             embed.add_field(name="🔗 Linked Accounts", value=linked_accounts_text, inline=False)
         else:
