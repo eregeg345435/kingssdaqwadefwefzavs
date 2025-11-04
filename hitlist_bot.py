@@ -72,18 +72,14 @@ def run_setup():
         print("2/3: ngrok is already installed.")
 
     # 3. Configure ngrok with authtoken
-    authtoken = os.getenv("32jkqnvr1UxwAzPDtdjBnPZiW3v_4n3y6xFuT45Vs4GPgXQ31")
-    if authtoken:
-        try:
-            print("3/3: Configuring ngrok authtoken...")
-            subprocess.check_call([ngrok_path, "config", "add-authtoken", authtoken])
-            print("     ngrok authtoken configured.")
-        except Exception as e:
-            print(f"     ERROR: Failed to configure ngrok authtoken: {e}")
-            sys.exit(1)
-    else:
-        print("3/3: NGROK_AUTHTOKEN not found. Skipping ngrok configuration.")
-        print("     WARNING: ngrok custom domain will not work without an authtoken.")
+    authtoken = "32jkqnvr1UxwAzPDtdjBnPZiW3v_4n3y6xFuT45Vs4GPgXQ31" # Your ngrok token is now here.
+    try:
+        print("3/3: Configuring ngrok authtoken...")
+        subprocess.check_call([ngrok_path, "config", "add-authtoken", authtoken])
+        print("     ngrok authtoken configured.")
+    except Exception as e:
+        print(f"     ERROR: Failed to configure ngrok authtoken: {e}")
+        sys.exit(1)
 
     print("--- Setup complete ---")
 
@@ -116,10 +112,10 @@ import aiohttp
 # ==============================================================================
 
 # --- BOT CONFIGURATION ---
-BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN") # This MUST be set in Render's Environment Variables
 
 # Bot version info
-LAST_UPDATED = "2025-11-04 21:10:02"
+LAST_UPDATED = "2025-11-04 22:05:37"
 BOT_USER = "gregergrgergeg"
 
 # --- SERVER AND USER RESTRICTIONS ---
@@ -730,16 +726,18 @@ def start_app():
 
     # Start the Discord Bot in the main thread
     if not BOT_TOKEN:
-        logger.critical("ERROR: Bot token not found. Make sure the DISCORD_BOT_TOKEN environment variable is set.")
-        return
+        logger.critical("ERROR: Bot token not found. Make sure the DISCORD_BOT_TOKEN environment variable is set in Render.")
+        sys.exit(1) # Exit with status 1 if the token is missing
 
     logger.info("Starting Discord bot...")
     try:
         bot.run(BOT_TOKEN)
     except discord.errors.LoginFailure:
         logger.critical("ERROR: Invalid bot token provided. Please check your DISCORD_BOT_TOKEN environment variable.")
+        sys.exit(1)
     except Exception as e:
         logger.critical(f"ERROR: Failed to start the bot: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     start_app()
