@@ -72,7 +72,7 @@ def run_setup():
         print("2/3: ngrok is already installed.")
 
     # 3. Configure ngrok with authtoken
-    authtoken = os.getenv("NGROK_AUTHTOKEN")
+    authtoken = os.getenv("32jkqnvr1UxwAzPDtdjBnPZiW3v_4n3y6xFuT45Vs4GPgXQ31")
     if authtoken:
         try:
             print("3/3: Configuring ngrok authtoken...")
